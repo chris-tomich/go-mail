@@ -10,16 +10,16 @@ import (
 	"github.com/chris-tomich/go-mail/message/attachments"
 	"github.com/chris-tomich/go-mail/message/body"
 	"github.com/chris-tomich/go-mail/message/headers"
+	"github.com/chris-tomich/go-mail/message/headers/mime"
+	"github.com/pkg/errors"
 )
 
 // Message represents a mail message to be sent.
 // At the very minimum a message must contain a from address, a to address. Everything else is optional.
 type Message struct {
-	buffer      *bytes.Buffer
-	writer      *multipart.Writer
 	headers     textproto.MIMEHeader
-	textBody    string
-	htmlBody    string
+	textBody    *body.MailBody
+	htmlBody    *body.MailBody
 	images      map[string]*attachments.EmbeddedBinaryObject
 	attachments map[string]*attachments.EmbeddedBinaryObject
 }
@@ -28,8 +28,6 @@ type Message struct {
 // an empty Message object as there are internal members that need to be instantiated.
 func NewEmpty() *Message {
 	m := &Message{}
-	m.buffer = &bytes.Buffer{}
-	m.writer = multipart.NewWriter(m.buffer)
 	m.headers = make(textproto.MIMEHeader)
 	return m
 }
@@ -71,13 +69,13 @@ func (m *Message) AddMailHeader(key, value string) {
 // SetTextBody will set/overwrite the body for the text-only portion of the email.
 // This body is additional to the HTML body and does not impact anything set with SetHTMLBody().
 func (m *Message) SetTextBody(body *body.MailBody) {
-	m.textBody = body.Body
+	m.textBody = body
 }
 
 // SetHTMLBody will set/overwrite the body for the HTML portion of the email and override all currently stored images.
 // This body is additional to the text-only body and does not impact anything set with SetTextBody().
 func (m *Message) SetHTMLBody(body *body.MailBody, images ...*attachments.EmbeddedBinaryObject) {
-	m.htmlBody = body.Body
+	m.htmlBody = body
 
 	m.images = make(map[string]*attachments.EmbeddedBinaryObject)
 
@@ -110,8 +108,71 @@ func serialiseHeaders(w io.Writer, headers textproto.MIMEHeader) error {
 	return nil
 }
 
-func (m *Message) GenerateMessage() *bytes.Buffer {
-	//err := serialiseHeaders(m.buffer, m.headers)
+// GenerateMessage will create a buffer containing the email message in it's current state.
+func (m *Message) GenerateMessage() (*bytes.Buffer, error) {
+	buf := &bytes.Buffer{}
+	w := multipart.NewWriter(buf)
 
-	return nil
+	if len(m.attachments) > 0 {
+		m.AddMailHeader(headers.ContentType(mime.MultipartMixed.SetBoundary(w.Boundary())))
+	} else {
+		m.AddMailHeader(headers.ContentType(mime.MultipartAlternative.SetBoundary(w.Boundary())))
+	}
+
+	err := serialiseHeaders(buf, m.headers)
+
+	if m.textBody != nil {
+		textBodyHeaders := make(textproto.MIMEHeader)
+		textBodyHeaders.Add(headers.ContentType(mime.TextPlain))
+
+		p, err := w.CreatePart(textBodyHeaders)
+
+		if err != nil {
+			return nil, err
+		}
+
+		p.Write([]byte(m.textBody.GenerateBody()))
+	}
+
+	if m.htmlBody != nil {
+		//htmlBodyHeaders := make(textproto.MIMEHeader)
+		//htmlBodyHeaders.Add(headers.ContentType(mime.TextHTML))
+		relatedBodyW := multipart.NewWriter(buf)
+		relatedBodyHeaders := make(textproto.MIMEHeader)
+		relatedBodyHeaders.Add(headers.ContentType(mime.MultipartRelated.SetBoundary(relatedBodyW.Boundary())))
+
+		//p, err :=
+		w.CreatePart(relatedBodyHeaders)
+
+		if err != nil {
+			return nil, err
+		}
+
+		//relatedBodyBuf := &bytes.Buffer{}
+		//relatedBodyW := multipart.NewWriter(buf)
+
+		//serialiseHeaders(buf, relatedBodyHeaders)
+
+		htmlBodyHeaders := make(textproto.MIMEHeader)
+		htmlBodyHeaders.Add(headers.ContentType(mime.TextHTML))
+		htmlBodyP, err := relatedBodyW.CreatePart(htmlBodyHeaders)
+
+		if err != nil {
+			return nil, err
+		}
+
+		htmlBodyP.Write([]byte(m.htmlBody.GenerateBody()))
+
+		relatedBodyW.Close()
+
+		//p.Write(relatedBodyBuf.Bytes())
+	}
+
+	w.Close()
+
+	if err != nil {
+		return nil, errors.Wrap(err, "There was an issue serialising the headers.")
+	}
+
+	return buf, nil
 }

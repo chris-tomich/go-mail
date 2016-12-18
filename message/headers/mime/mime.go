@@ -1252,6 +1252,7 @@ const (
 	ApplicationVndHandheldEntertainmentXML Type = "application/vnd.handheld-entertainment+xml"
 )
 
+// Types is a mapping of various filename extensions with their MIME type.
 var Types = map[string]string{
 	"123":         "application/vnd.lotus-1-2-3",
 	"3dml":        "text/vnd.in3d.3dml",

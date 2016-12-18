@@ -1,0 +1,6 @@
+hash: a06d3143a8c9c2a01c13c7ee759541358d9c6871580fea539362f5e249b1b158
+updated: 2016-12-17T16:05:16.750509363+08:00
+imports:
+- name: github.com/pkg/errors
+  version: 645ef00459ed84a119197bfb8d8205042c6df63d
+testImports: []
