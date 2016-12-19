@@ -135,23 +135,15 @@ func (m *Message) GenerateMessage() (*bytes.Buffer, error) {
 	}
 
 	if m.htmlBody != nil {
-		//htmlBodyHeaders := make(textproto.MIMEHeader)
-		//htmlBodyHeaders.Add(headers.ContentType(mime.TextHTML))
 		relatedBodyW := multipart.NewWriter(buf)
 		relatedBodyHeaders := make(textproto.MIMEHeader)
 		relatedBodyHeaders.Add(headers.ContentType(mime.MultipartRelated.SetBoundary(relatedBodyW.Boundary())))
 
-		//p, err :=
 		w.CreatePart(relatedBodyHeaders)
 
 		if err != nil {
 			return nil, err
 		}
-
-		//relatedBodyBuf := &bytes.Buffer{}
-		//relatedBodyW := multipart.NewWriter(buf)
-
-		//serialiseHeaders(buf, relatedBodyHeaders)
 
 		htmlBodyHeaders := make(textproto.MIMEHeader)
 		htmlBodyHeaders.Add(headers.ContentType(mime.TextHTML))
@@ -164,8 +156,6 @@ func (m *Message) GenerateMessage() (*bytes.Buffer, error) {
 		htmlBodyP.Write([]byte(m.htmlBody.GenerateBody()))
 
 		relatedBodyW.Close()
-
-		//p.Write(relatedBodyBuf.Bytes())
 	}
 
 	w.Close()
