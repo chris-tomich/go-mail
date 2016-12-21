@@ -6,6 +6,8 @@ import (
 
 	"github.com/chris-tomich/go-mail/message/headers/encoding"
 	"github.com/chris-tomich/go-mail/message/headers/mime"
+	"fmt"
+	"github.com/chris-tomich/go-mail/message/headers/params"
 )
 
 func aggregateAddresses(addresses ...string) string {
@@ -47,8 +49,24 @@ func MIMEVersion(version float64) (string, string) {
 }
 
 // ContentType returns a "Content-Type" header with the given MIME type.
-func ContentType(mimeType mime.Type) (string, string) {
-	return "Content-Type", string(mimeType)
+func ContentType(mimeType mime.Type, additionalParams ...params.Header) (string, string) {
+	if len(additionalParams) > 0 {
+		return "Content-Type", fmt.Sprintf("%v%v", mimeType, params.Aggregate(additionalParams))
+	} else {
+		return "Content-Type", string(mimeType)
+	}
+}
+
+func ContentDescription(description string) (string, string) {
+	return "Content-Description", description
+}
+
+func ContentDisposition(disposition params.ContentDisposition, additionalParams ...params.Header) (string, string) {
+	return "Content-Disposition", fmt.Sprintf("%v%v", disposition, params.Aggregate(additionalParams))
+}
+
+func ContentId(contentId string) (string, string) {
+	return "Content-ID", fmt.Sprintf("<%v>", contentId)
 }
 
 // ContentTransferEncoding returns a "Content-Transfer-Encoding" header with the provided encoding type.

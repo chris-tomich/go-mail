@@ -12,6 +12,11 @@ import (
 	"github.com/chris-tomich/go-mail/message/headers"
 	"github.com/chris-tomich/go-mail/message/headers/mime"
 	"github.com/pkg/errors"
+	"strings"
+	"strconv"
+	"github.com/chris-tomich/go-mail/message/headers/params"
+	"time"
+	"github.com/chris-tomich/go-mail/message/headers/encoding"
 )
 
 // Message represents a mail message to be sent.
@@ -40,7 +45,7 @@ func NewEmpty() *Message {
 // Addresses can be in the following formats -
 // Simple Email - chris.tomich@email.com
 // Email with Name - Chris Tomich <chris.tomich@email.com>
-func NewSimple(from string, to string, subject string, bodyText string, attachmentFilePaths ...string) *Message {
+func NewSimple(from string, to string, subject string, bodyText string, attachmentFilePaths ...string) (*Message, error) {
 	m := NewEmpty()
 	m.AddMailHeader(headers.From(from))
 	m.AddMailHeader(headers.To(to))
@@ -49,10 +54,14 @@ func NewSimple(from string, to string, subject string, bodyText string, attachme
 	m.SetTextBody(body.FromString(bodyText))
 
 	for _, filePath := range attachmentFilePaths {
-		m.AddAttachment(attachments.FileAttachmentFromFile(filePath))
+		err := m.AddAttachment(attachments.FileAttachmentFromFile(filePath))
+
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	return m
+	return m, nil
 }
 
 // AddMailHeader adds a header to the email given the key and value.
@@ -85,8 +94,14 @@ func (m *Message) SetHTMLBody(body *body.MailBody, images ...*attachments.Embedd
 }
 
 // AddAttachment will add an attachment to the email.
-func (m *Message) AddAttachment(attachment *attachments.EmbeddedBinaryObject) {
+func (m *Message) AddAttachment(attachment *attachments.EmbeddedBinaryObject, err error) error {
+	if err != nil {
+		return err
+	}
+
 	m.attachments[attachment.FileName] = attachment
+
+	return nil
 }
 
 // RemoveAttachment will remove the attachment from the email.
@@ -114,9 +129,9 @@ func (m *Message) GenerateMessage() (*bytes.Buffer, error) {
 	w := multipart.NewWriter(buf)
 
 	if len(m.attachments) > 0 {
-		m.AddMailHeader(headers.ContentType(mime.MultipartMixed.SetBoundary(w.Boundary())))
+		m.AddMailHeader(headers.ContentType(mime.MultipartMixed, params.StringValue("boundary", w.Boundary())))
 	} else {
-		m.AddMailHeader(headers.ContentType(mime.MultipartAlternative.SetBoundary(w.Boundary())))
+		m.AddMailHeader(headers.ContentType(mime.MultipartAlternative, params.StringValue("boundary", w.Boundary())))
 	}
 
 	err := serialiseHeaders(buf, m.headers)
@@ -137,7 +152,7 @@ func (m *Message) GenerateMessage() (*bytes.Buffer, error) {
 	if m.htmlBody != nil {
 		relatedBodyW := multipart.NewWriter(buf)
 		relatedBodyHeaders := make(textproto.MIMEHeader)
-		relatedBodyHeaders.Add(headers.ContentType(mime.MultipartRelated.SetBoundary(relatedBodyW.Boundary())))
+		relatedBodyHeaders.Add(headers.ContentType(mime.MultipartRelated, params.StringValue("boundary", relatedBodyW.Boundary())))
 
 		w.CreatePart(relatedBodyHeaders)
 
@@ -153,7 +168,39 @@ func (m *Message) GenerateMessage() (*bytes.Buffer, error) {
 			return nil, err
 		}
 
-		htmlBodyP.Write([]byte(m.htmlBody.GenerateBody()))
+		htmlBodyText := m.htmlBody.GenerateBody()
+
+		contentIds := make(map[string]string)
+		counter := 10000
+
+		if len(m.images) > 0 {
+			for _, image := range m.images {
+				contentIds[image.FileName] = image.FileName + "@" + strconv.Itoa(counter)
+				htmlBodyText = strings.Replace(htmlBodyText, image.FileName, "cid:" + contentIds[image.FileName], -1)
+			}
+		}
+
+		htmlBodyP.Write([]byte(htmlBodyText))
+
+		currentTime := time.Now()
+
+		if len(m.images) > 0 {
+			for _, image := range m.images {
+				embeddedImageHeaders := make(textproto.MIMEHeader)
+				embeddedImageHeaders.Add(headers.ContentType(mime.ImageJpeg, params.StringValue("name", image.FileName)))
+				embeddedImageHeaders.Add(headers.ContentDescription(image.FileName))
+				embeddedImageHeaders.Add(headers.ContentDisposition(params.DispInline, params.StringValue("filename", image.FileName), params.IntValue("size", image.Data.Len()), params.DateValue("creation-date", currentTime), params.DateValue("modification-date", currentTime)))
+				embeddedImageHeaders.Add(headers.ContentId(contentIds[image.FileName]))
+				embeddedImageHeaders.Add(headers.ContentTransferEncoding(encoding.Base64))
+				embeddedImageP, err := relatedBodyW.CreatePart(embeddedImageHeaders)
+
+				if err != nil {
+					return nil, err
+				}
+
+				embeddedImageP.Write(image.Data.Bytes())
+			}
+		}
 
 		relatedBodyW.Close()
 	}

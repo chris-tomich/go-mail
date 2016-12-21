@@ -4,6 +4,12 @@ package mime
 type Type string
 
 const (
+	// MultipartAlternative is the MIME type for 'multipart/alternative'
+	MultipartAlternative Type = "multipart/alternative"
+	// MultipartMixed is the MIME type for 'multipart/mixed'
+	MultipartMixed Type = "multipart/mixed"
+	// MultipartRelated is the MIME type for 'multipart/related'
+	MultipartRelated Type = "multipart/related"
 	// ApplicationVndLotus123 is the MIME type for 'application/vnd.lotus-1-2-3'
 	ApplicationVndLotus123 Type = "application/vnd.lotus-1-2-3"
 	// TextVndIn3d3dml is the MIME type for 'text/vnd.in3d.3dml'
