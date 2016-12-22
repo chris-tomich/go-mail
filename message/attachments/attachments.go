@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/ioutil"
 	"path/filepath"
+	"github.com/chris-tomich/go-mail/message/headers/mime"
 )
 
 // Represents a buffer that holds base64 encoded information.
@@ -15,10 +16,12 @@ type Base64Buffer struct {
 
 // EmbeddedBinaryObject contains the data necessary to attach a file or embed an image into an email.
 type EmbeddedBinaryObject struct {
-	// FileName is the name of the attachment or image.
-	FileName string
+	// Filename is the name of the attachment or image.
+	Filename string
 	// Data is the base64 encoded data for this attachment or image.
-	Data Base64Buffer
+	Data     Base64Buffer
+	// MimeType stores the MIME type detected for this file based upon it's filename extension.
+	MIMEType mime.Type
 }
 
 func NewEmbeddedBinaryObject() *EmbeddedBinaryObject {
@@ -29,9 +32,17 @@ func NewEmbeddedBinaryObject() *EmbeddedBinaryObject {
 	}
 }
 
-func loadEmbeddedBinaryObject(filename string, b []byte) (*EmbeddedBinaryObject, error) {
+func loadEmbeddedBinaryObject(filename string, extension string, b []byte) (*EmbeddedBinaryObject, error) {
 	o := NewEmbeddedBinaryObject()
-	o.FileName = filename
+	o.Filename = filename
+
+	matchingMime := mime.Types[extension]
+
+	if matchingMime == "" {
+		o.MIMEType = mime.ApplicationOctetStream
+	} else {
+		o.MIMEType = mime.Type(matchingMime)
+	}
 
 	wc := base64.NewEncoder(base64.StdEncoding, o.Data)
 	_, err := wc.Write(b)
@@ -58,8 +69,9 @@ func FileAttachmentFromFile(filePath string) (*EmbeddedBinaryObject, error) {
 	}
 
 	_, filename := filepath.Split(filePath)
+	ext := filepath.Ext(filePath)[1:]
 
-	return loadEmbeddedBinaryObject(filename, b)
+	return loadEmbeddedBinaryObject(filename, ext, b)
 }
 
 // FileAttachmentFromReader will return a EmbeddedBinaryObject based upon the data provided and provided filename.
@@ -71,7 +83,9 @@ func FileAttachmentFromReader(filename string, reader io.Reader) (*EmbeddedBinar
 		return nil, err
 	}
 
-	return loadEmbeddedBinaryObject(filename, b)
+	ext := filepath.Ext(filename)[1:]
+
+	return loadEmbeddedBinaryObject(filename, ext, b)
 }
 
 // InlineImageFromPath will return an EmbeddedBinaryObject based upon the file path provided. The name of the image
@@ -83,7 +97,8 @@ func InlineImageFromPath(imagePath string) (*EmbeddedBinaryObject, error) {
 }
 
 // InlineImageFromFile will return an EmbeddedBinaryObject based upon the file path provided. The imageName is
-// the value used in the corresponding HTML body.
+// the value used in the <img src='' /> tags in the corresponding HTML body. It is recommended this is the actual
+// file's name so that the MIME type can be properly detected.
 func InlineImageFromFile(imageName string, imagePath string) (*EmbeddedBinaryObject, error) {
 	b, err := ioutil.ReadFile(imagePath)
 
@@ -91,11 +106,14 @@ func InlineImageFromFile(imageName string, imagePath string) (*EmbeddedBinaryObj
 		return nil, err
 	}
 
-	return loadEmbeddedBinaryObject(imageName, b)
+	ext := filepath.Ext(imageName)[1:]
+
+	return loadEmbeddedBinaryObject(imageName, ext, b)
 }
 
 // InlineImageFromReader will return an EmbeddedBinaryObject based upon the data provided. The imageName is
-// the value used in the corresponding HTML body.
+// the value used in the <img src='' /> tags in the corresponding HTML body. It is recommended this is the actual
+// file's name so that the MIME type can be properly detected.
 func InlineImageFromReader(imageName string, reader io.Reader) (*EmbeddedBinaryObject, error) {
 	b, err := ioutil.ReadAll(reader)
 
@@ -103,5 +121,7 @@ func InlineImageFromReader(imageName string, reader io.Reader) (*EmbeddedBinaryO
 		return nil, err
 	}
 
-	return loadEmbeddedBinaryObject(imageName, b)
+	ext := filepath.Ext(imageName)[1:]
+
+	return loadEmbeddedBinaryObject(imageName, ext, b)
 }

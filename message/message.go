@@ -34,6 +34,8 @@ type Message struct {
 func NewEmpty() *Message {
 	m := &Message{}
 	m.headers = make(textproto.MIMEHeader)
+	m.images = make(map[string]*attachments.EmbeddedBinaryObject)
+	m.attachments = make(map[string]*attachments.EmbeddedBinaryObject)
 	return m
 }
 
@@ -86,10 +88,8 @@ func (m *Message) SetTextBody(body *body.MailBody) {
 func (m *Message) SetHTMLBody(body *body.MailBody, images ...*attachments.EmbeddedBinaryObject) {
 	m.htmlBody = body
 
-	m.images = make(map[string]*attachments.EmbeddedBinaryObject)
-
 	for _, inlineImage := range images {
-		m.images[inlineImage.FileName] = inlineImage
+		m.images[inlineImage.Filename] = inlineImage
 	}
 }
 
@@ -99,7 +99,7 @@ func (m *Message) AddAttachment(attachment *attachments.EmbeddedBinaryObject, er
 		return err
 	}
 
-	m.attachments[attachment.FileName] = attachment
+	m.attachments[attachment.Filename] = attachment
 
 	return nil
 }
@@ -130,17 +130,33 @@ func (m *Message) GenerateMessage() (*bytes.Buffer, error) {
 
 	if len(m.attachments) > 0 {
 		m.AddMailHeader(headers.ContentType(mime.MultipartMixed, params.StringValue("boundary", w.Boundary())))
-	} else {
-		m.AddMailHeader(headers.ContentType(mime.MultipartAlternative, params.StringValue("boundary", w.Boundary())))
 	}
 
 	err := serialiseHeaders(buf, m.headers)
+
+	if err != nil {
+		return nil, err
+	}
+
+	currentTime := time.Now()
+
+	relatedBodyW := multipart.NewWriter(buf)
+	relatedBodyHeaders := make(textproto.MIMEHeader)
+	relatedBodyHeaders.Add(headers.ContentType(mime.MultipartRelated, params.StringValue("boundary", relatedBodyW.Boundary())))
+
+	w.CreatePart(relatedBodyHeaders)
+
+	alternativeBodyW := multipart.NewWriter(buf)
+	alternativeBodyHeaders := make(textproto.MIMEHeader)
+	alternativeBodyHeaders.Add(headers.ContentType(mime.MultipartAlternative, params.StringValue("boundary", alternativeBodyW.Boundary())))
+
+	relatedBodyW.CreatePart(alternativeBodyHeaders)
 
 	if m.textBody != nil {
 		textBodyHeaders := make(textproto.MIMEHeader)
 		textBodyHeaders.Add(headers.ContentType(mime.TextPlain))
 
-		p, err := w.CreatePart(textBodyHeaders)
+		p, err := alternativeBodyW.CreatePart(textBodyHeaders)
 
 		if err != nil {
 			return nil, err
@@ -149,20 +165,13 @@ func (m *Message) GenerateMessage() (*bytes.Buffer, error) {
 		p.Write([]byte(m.textBody.GenerateBody()))
 	}
 
+	contentIds := make(map[string]string)
+
 	if m.htmlBody != nil {
-		relatedBodyW := multipart.NewWriter(buf)
-		relatedBodyHeaders := make(textproto.MIMEHeader)
-		relatedBodyHeaders.Add(headers.ContentType(mime.MultipartRelated, params.StringValue("boundary", relatedBodyW.Boundary())))
-
-		w.CreatePart(relatedBodyHeaders)
-
-		if err != nil {
-			return nil, err
-		}
-
 		htmlBodyHeaders := make(textproto.MIMEHeader)
 		htmlBodyHeaders.Add(headers.ContentType(mime.TextHTML))
-		htmlBodyP, err := relatedBodyW.CreatePart(htmlBodyHeaders)
+		//htmlBodyHeaders.Add(headers.ContentTransferEncoding(encoding.QuotedPrintable))
+		htmlBodyP, err := alternativeBodyW.CreatePart(htmlBodyHeaders)
 
 		if err != nil {
 			return nil, err
@@ -170,39 +179,57 @@ func (m *Message) GenerateMessage() (*bytes.Buffer, error) {
 
 		htmlBodyText := m.htmlBody.GenerateBody()
 
-		contentIds := make(map[string]string)
 		counter := 10000
 
 		if len(m.images) > 0 {
 			for _, image := range m.images {
-				contentIds[image.FileName] = image.FileName + "@" + strconv.Itoa(counter)
-				htmlBodyText = strings.Replace(htmlBodyText, image.FileName, "cid:" + contentIds[image.FileName], -1)
+				contentIds[image.Filename] = image.Filename + "@" + strconv.Itoa(counter)
+				htmlBodyText = strings.Replace(htmlBodyText, image.Filename, "cid:" + contentIds[image.Filename], -1)
 			}
 		}
 
 		htmlBodyP.Write([]byte(htmlBodyText))
+	}
 
-		currentTime := time.Now()
+	alternativeBodyW.Close()
 
-		if len(m.images) > 0 {
-			for _, image := range m.images {
-				embeddedImageHeaders := make(textproto.MIMEHeader)
-				embeddedImageHeaders.Add(headers.ContentType(mime.ImageJpeg, params.StringValue("name", image.FileName)))
-				embeddedImageHeaders.Add(headers.ContentDescription(image.FileName))
-				embeddedImageHeaders.Add(headers.ContentDisposition(params.DispInline, params.StringValue("filename", image.FileName), params.IntValue("size", image.Data.Len()), params.DateValue("creation-date", currentTime), params.DateValue("modification-date", currentTime)))
-				embeddedImageHeaders.Add(headers.ContentId(contentIds[image.FileName]))
-				embeddedImageHeaders.Add(headers.ContentTransferEncoding(encoding.Base64))
-				embeddedImageP, err := relatedBodyW.CreatePart(embeddedImageHeaders)
+	if len(m.images) > 0 {
+		for _, image := range m.images {
+			embeddedImageHeaders := make(textproto.MIMEHeader)
+			embeddedImageHeaders.Add(headers.ContentType(image.MIMEType, params.StringValue("name", image.Filename)))
+			embeddedImageHeaders.Add(headers.ContentDescription(image.Filename))
+			embeddedImageHeaders.Add(headers.ContentDisposition(params.DispInline, params.StringValue("filename", image.Filename), params.IntValue("size", image.Data.Len()), params.DateValue("creation-date", currentTime), params.DateValue("modification-date", currentTime)))
+			embeddedImageHeaders.Add(headers.ContentId(contentIds[image.Filename]))
+			embeddedImageHeaders.Add(headers.ContentTransferEncoding(encoding.Base64))
+			embeddedImageP, err := relatedBodyW.CreatePart(embeddedImageHeaders)
+
+			if err != nil {
+				return nil, err
+			}
+
+			embeddedImageP.Write(image.Data.Bytes())
+		}
+	}
+
+	relatedBodyW.Close()
+
+	if len(m.attachments) > 0 {
+		if len(m.attachments) > 0 {
+			for _, attachment := range m.attachments {
+				attachmentHeaders := make(textproto.MIMEHeader)
+				attachmentHeaders.Add(headers.ContentType(attachment.MIMEType, params.StringValue("name", attachment.Filename)))
+				attachmentHeaders.Add(headers.ContentDescription(attachment.Filename))
+				attachmentHeaders.Add(headers.ContentDisposition(params.DispAttachment, params.StringValue("filename", attachment.Filename), params.IntValue("size", attachment.Data.Len()), params.DateValue("creation-date", currentTime), params.DateValue("modification-date", currentTime)))
+				attachmentHeaders.Add(headers.ContentTransferEncoding(encoding.Base64))
+				attachmentP, err := w.CreatePart(attachmentHeaders)
 
 				if err != nil {
 					return nil, err
 				}
 
-				embeddedImageP.Write(image.Data.Bytes())
+				attachmentP.Write(attachment.Data.Bytes())
 			}
 		}
-
-		relatedBodyW.Close()
 	}
 
 	w.Close()
