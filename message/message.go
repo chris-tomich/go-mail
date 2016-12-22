@@ -123,6 +123,85 @@ func serialiseHeaders(w io.Writer, headers textproto.MIMEHeader) error {
 	return nil
 }
 
+func writeTextBody(alternativeBodyW *multipart.Writer, body string) error {
+	textBodyHeaders := make(textproto.MIMEHeader)
+	textBodyHeaders.Add(headers.ContentType(mime.TextPlain))
+
+	p, err := alternativeBodyW.CreatePart(textBodyHeaders)
+
+	if err != nil {
+		return err
+	}
+
+	p.Write([]byte(body))
+
+	return nil
+}
+
+func writeHtmlBody(alternativeBodyW *multipart.Writer, body string, images map[string]*attachments.EmbeddedBinaryObject) (map[string]string, error) {
+	contentIds := make(map[string]string)
+
+	htmlBodyHeaders := make(textproto.MIMEHeader)
+	htmlBodyHeaders.Add(headers.ContentType(mime.TextHTML))
+	htmlBodyP, err := alternativeBodyW.CreatePart(htmlBodyHeaders)
+
+	if err != nil {
+		return nil, err
+	}
+
+	counter := 10000
+
+	if len(images) > 0 {
+		for _, image := range images {
+			contentIds[image.Filename] = image.Filename + "@" + strconv.Itoa(counter)
+			body = strings.Replace(body, image.Filename, "cid:" + contentIds[image.Filename], -1)
+		}
+	}
+
+	htmlBodyP.Write([]byte(body))
+
+	return contentIds, nil
+}
+
+func writeInlineImages(relatedBodyW *multipart.Writer, images map[string]*attachments.EmbeddedBinaryObject, contentIds map[string]string, currentTime time.Time) error {
+	for _, image := range images {
+		embeddedImageHeaders := make(textproto.MIMEHeader)
+		embeddedImageHeaders.Add(headers.ContentType(image.MIMEType, params.StringValue("name", image.Filename)))
+		embeddedImageHeaders.Add(headers.ContentDescription(image.Filename))
+		embeddedImageHeaders.Add(headers.ContentDisposition(params.DispInline, params.StringValue("filename", image.Filename), params.IntValue("size", image.Data.Len()), params.DateValue("creation-date", currentTime), params.DateValue("modification-date", currentTime)))
+		embeddedImageHeaders.Add(headers.ContentId(contentIds[image.Filename]))
+		embeddedImageHeaders.Add(headers.ContentTransferEncoding(encoding.Base64))
+		embeddedImageP, err := relatedBodyW.CreatePart(embeddedImageHeaders)
+
+		if err != nil {
+			return err
+		}
+
+		embeddedImageP.Write(image.Data.Bytes())
+	}
+
+	return nil
+}
+
+func writeAttachments(w *multipart.Writer, attachments map[string]*attachments.EmbeddedBinaryObject, currentTime time.Time) error {
+	for _, attachment := range attachments {
+		attachmentHeaders := make(textproto.MIMEHeader)
+		attachmentHeaders.Add(headers.ContentType(attachment.MIMEType, params.StringValue("name", attachment.Filename)))
+		attachmentHeaders.Add(headers.ContentDescription(attachment.Filename))
+		attachmentHeaders.Add(headers.ContentDisposition(params.DispAttachment, params.StringValue("filename", attachment.Filename), params.IntValue("size", attachment.Data.Len()), params.DateValue("creation-date", currentTime), params.DateValue("modification-date", currentTime)))
+		attachmentHeaders.Add(headers.ContentTransferEncoding(encoding.Base64))
+		attachmentP, err := w.CreatePart(attachmentHeaders)
+
+		if err != nil {
+			return err
+		}
+
+		attachmentP.Write(attachment.Data.Bytes())
+	}
+
+	return nil
+}
+
 // GenerateMessage will create a buffer containing the email message in it's current state.
 func (m *Message) GenerateMessage() (*bytes.Buffer, error) {
 	buf := &bytes.Buffer{}
@@ -153,82 +232,40 @@ func (m *Message) GenerateMessage() (*bytes.Buffer, error) {
 	relatedBodyW.CreatePart(alternativeBodyHeaders)
 
 	if m.textBody != nil {
-		textBodyHeaders := make(textproto.MIMEHeader)
-		textBodyHeaders.Add(headers.ContentType(mime.TextPlain))
-
-		p, err := alternativeBodyW.CreatePart(textBodyHeaders)
+		err = writeTextBody(alternativeBodyW, m.textBody.GenerateBody())
 
 		if err != nil {
 			return nil, err
 		}
-
-		p.Write([]byte(m.textBody.GenerateBody()))
 	}
 
-	contentIds := make(map[string]string)
+	var contentIds map[string]string
 
 	if m.htmlBody != nil {
-		htmlBodyHeaders := make(textproto.MIMEHeader)
-		htmlBodyHeaders.Add(headers.ContentType(mime.TextHTML))
-		//htmlBodyHeaders.Add(headers.ContentTransferEncoding(encoding.QuotedPrintable))
-		htmlBodyP, err := alternativeBodyW.CreatePart(htmlBodyHeaders)
+		contentIds, err = writeHtmlBody(alternativeBodyW, m.htmlBody.GenerateBody(), m.images)
 
 		if err != nil {
 			return nil, err
 		}
-
-		htmlBodyText := m.htmlBody.GenerateBody()
-
-		counter := 10000
-
-		if len(m.images) > 0 {
-			for _, image := range m.images {
-				contentIds[image.Filename] = image.Filename + "@" + strconv.Itoa(counter)
-				htmlBodyText = strings.Replace(htmlBodyText, image.Filename, "cid:" + contentIds[image.Filename], -1)
-			}
-		}
-
-		htmlBodyP.Write([]byte(htmlBodyText))
 	}
 
 	alternativeBodyW.Close()
 
-	if len(m.images) > 0 {
-		for _, image := range m.images {
-			embeddedImageHeaders := make(textproto.MIMEHeader)
-			embeddedImageHeaders.Add(headers.ContentType(image.MIMEType, params.StringValue("name", image.Filename)))
-			embeddedImageHeaders.Add(headers.ContentDescription(image.Filename))
-			embeddedImageHeaders.Add(headers.ContentDisposition(params.DispInline, params.StringValue("filename", image.Filename), params.IntValue("size", image.Data.Len()), params.DateValue("creation-date", currentTime), params.DateValue("modification-date", currentTime)))
-			embeddedImageHeaders.Add(headers.ContentId(contentIds[image.Filename]))
-			embeddedImageHeaders.Add(headers.ContentTransferEncoding(encoding.Base64))
-			embeddedImageP, err := relatedBodyW.CreatePart(embeddedImageHeaders)
+	if m.htmlBody != nil && len(m.images) > 0 {
+		err = writeInlineImages(relatedBodyW, m.images, contentIds, currentTime)
 
-			if err != nil {
-				return nil, err
-			}
-
-			embeddedImageP.Write(image.Data.Bytes())
+		if err != nil {
+			return nil, err
 		}
 	}
 
 	relatedBodyW.Close()
 
 	if len(m.attachments) > 0 {
-		if len(m.attachments) > 0 {
-			for _, attachment := range m.attachments {
-				attachmentHeaders := make(textproto.MIMEHeader)
-				attachmentHeaders.Add(headers.ContentType(attachment.MIMEType, params.StringValue("name", attachment.Filename)))
-				attachmentHeaders.Add(headers.ContentDescription(attachment.Filename))
-				attachmentHeaders.Add(headers.ContentDisposition(params.DispAttachment, params.StringValue("filename", attachment.Filename), params.IntValue("size", attachment.Data.Len()), params.DateValue("creation-date", currentTime), params.DateValue("modification-date", currentTime)))
-				attachmentHeaders.Add(headers.ContentTransferEncoding(encoding.Base64))
-				attachmentP, err := w.CreatePart(attachmentHeaders)
+		err = writeAttachments(w, m.attachments, currentTime)
 
-				if err != nil {
-					return nil, err
-				}
-
-				attachmentP.Write(attachment.Data.Bytes())
-			}
+		if err != nil {
+			return nil, err
 		}
 	}
 
