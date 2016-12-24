@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/ioutil"
 	"path/filepath"
+
 	"github.com/chris-tomich/go-mail/message/headers/mime"
 )
 
@@ -19,7 +20,7 @@ type EmbeddedBinaryObject struct {
 	// Filename is the name of the attachment or image.
 	Filename string
 	// Data is the base64 encoded data for this attachment or image.
-	Data     Base64Buffer
+	Data Base64Buffer
 	// MimeType stores the MIME type detected for this file based upon it's filename extension.
 	MIMEType mime.Type
 }

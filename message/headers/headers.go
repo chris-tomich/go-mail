@@ -4,9 +4,10 @@ import (
 	"strconv"
 	"strings"
 
+	"fmt"
+
 	"github.com/chris-tomich/go-mail/message/headers/encoding"
 	"github.com/chris-tomich/go-mail/message/headers/mime"
-	"fmt"
 	"github.com/chris-tomich/go-mail/message/headers/params"
 )
 

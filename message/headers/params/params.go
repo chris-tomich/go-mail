@@ -1,9 +1,9 @@
 package params
 
 import (
+	"bytes"
 	"fmt"
 	"time"
-	"bytes"
 )
 
 func Aggregate(params []Header) string {
@@ -21,7 +21,7 @@ type Header interface {
 }
 
 type stringValue struct {
-	key string
+	key   string
 	value string
 }
 
@@ -31,13 +31,13 @@ func (p stringValue) String() string {
 
 func StringValue(key string, value string) Header {
 	return stringValue{
-		key: key,
+		key:   key,
 		value: value,
 	}
 }
 
 type intValue struct {
-	key string
+	key   string
 	value int
 }
 
@@ -47,13 +47,13 @@ func (p intValue) String() string {
 
 func IntValue(key string, value int) Header {
 	return intValue{
-		key: key,
+		key:   key,
 		value: value,
 	}
 }
 
 type dateValue struct {
-	key string
+	key   string
 	value time.Time
 }
 
@@ -63,7 +63,7 @@ func (p dateValue) String() string {
 
 func DateValue(key string, value time.Time) Header {
 	return dateValue{
-		key: key,
+		key:   key,
 		value: value,
 	}
 }

@@ -7,16 +7,17 @@ import (
 	"mime/multipart"
 	"net/textproto"
 
+	"strconv"
+	"strings"
+	"time"
+
 	"github.com/chris-tomich/go-mail/message/attachments"
 	"github.com/chris-tomich/go-mail/message/body"
 	"github.com/chris-tomich/go-mail/message/headers"
-	"github.com/chris-tomich/go-mail/message/headers/mime"
-	"github.com/pkg/errors"
-	"strings"
-	"strconv"
-	"github.com/chris-tomich/go-mail/message/headers/params"
-	"time"
 	"github.com/chris-tomich/go-mail/message/headers/encoding"
+	"github.com/chris-tomich/go-mail/message/headers/mime"
+	"github.com/chris-tomich/go-mail/message/headers/params"
+	"github.com/pkg/errors"
 )
 
 // Message represents a mail message to be sent.
@@ -154,7 +155,7 @@ func writeHtmlBody(alternativeBodyW *multipart.Writer, body string, images map[s
 	if len(images) > 0 {
 		for _, image := range images {
 			contentIds[image.Filename] = image.Filename + "@" + strconv.Itoa(counter)
-			body = strings.Replace(body, image.Filename, "cid:" + contentIds[image.Filename], -1)
+			body = strings.Replace(body, image.Filename, "cid:"+contentIds[image.Filename], -1)
 		}
 	}
 
@@ -202,14 +203,306 @@ func writeAttachments(w *multipart.Writer, attachments map[string]*attachments.E
 	return nil
 }
 
+type emailBody interface {
+	WriteContent(io.Writer, *multipart.Writer) error
+	Close(io.Writer) error
+}
+
+type emailPart interface {
+	WriteFull(io.Writer, *multipart.Writer) error
+	Close(io.Writer) error
+}
+
+type container struct {
+	MIMEType mime.Type
+	Children []emailPart
+}
+
+// region textContainer is a container for plain text emails.
+
+type textContainer struct {
+	TextBody *body.MailBody
+	container
+}
+
+func (c *textContainer) WriteContent(p io.Writer, _ *multipart.Writer) error {
+	p.Write([]byte(c.TextBody.GenerateBody()))
+
+	return nil
+}
+
+func (c *textContainer) WriteFull(_ io.Writer, pw *multipart.Writer) error {
+	h := make(textproto.MIMEHeader)
+	h.Add(headers.ContentType(c.MIMEType))
+
+	p, err := pw.CreatePart(h)
+
+	if err != nil {
+		return err
+	}
+
+	return c.WriteContent(p, nil)
+}
+
+func (c *textContainer) Close(_ io.Writer) error {
+	return nil
+}
+
+// endregion
+
+// region htmlContainer is a container for the HTML portion of an HTML email. The images are stored in a separate map.
+
+type htmlContainer struct {
+	HTMLBody   *body.MailBody
+	ContentIds map[string]string
+	Images     map[string]*attachments.EmbeddedBinaryObject
+	container
+}
+
+func (c *htmlContainer) WriteContent(p io.Writer, _ *multipart.Writer) error {
+	counter := 10000
+
+	htmlBody := c.HTMLBody.GenerateBody()
+
+	if len(c.Images) > 0 {
+		for _, image := range c.Images {
+			c.ContentIds[image.Filename] = image.Filename + "@" + strconv.Itoa(counter)
+			htmlBody = strings.Replace(htmlBody, image.Filename, "cid:"+c.ContentIds[image.Filename], -1)
+		}
+	}
+
+	p.Write([]byte(htmlBody))
+
+	return nil
+}
+
+func (c *htmlContainer) WriteFull(_ io.Writer, pw *multipart.Writer) error {
+	h := make(textproto.MIMEHeader)
+	h.Add(headers.ContentType(c.MIMEType))
+	p, err := pw.CreatePart(h)
+
+	if err != nil {
+		return err
+	}
+
+	return c.WriteContent(p, nil)
+}
+
+func (c *htmlContainer) Close(_ io.Writer) error {
+	return nil
+}
+
+// endregion
+
+// region alternativeContainer is a container for emails that both have plain text and HTML components.
+
+type alternativeContainer struct {
+	container
+}
+
+func (c *alternativeContainer) WriteContent(buf io.Writer, w *multipart.Writer) error {
+	for _, child := range c.Children {
+		child.WriteFull(buf, w)
+	}
+
+	w.Close()
+
+	return nil
+}
+
+func (c *alternativeContainer) WriteFull(buf io.Writer, pw *multipart.Writer) error {
+	w := multipart.NewWriter(buf)
+	h := make(textproto.MIMEHeader)
+	h.Add(headers.ContentType(mime.MultipartAlternative, params.StringValue("boundary", w.Boundary())))
+
+	pw.CreatePart(h)
+
+	return c.WriteContent(buf, w)
+}
+
+func (c *alternativeContainer) Close(_ io.Writer) error {
+	return nil
+}
+
+// endregion
+
+// region relatedContainer is a container for emails that have a HTML part with inline images.
+
+type relatedContainer struct {
+	ContentIds map[string]string
+	Images     map[string]*attachments.EmbeddedBinaryObject
+	Time       time.Time
+	container
+}
+
+func (c *relatedContainer) WriteContent(buf io.Writer, w *multipart.Writer) error {
+	for _, child := range c.Children {
+		child.WriteFull(buf, w)
+	}
+
+	err := writeInlineImages(w, c.Images, c.ContentIds, c.Time)
+
+	if err != nil {
+		return err
+	}
+
+	w.Close()
+
+	return nil
+}
+
+func (c *relatedContainer) WriteFull(buf io.Writer, pw *multipart.Writer) error {
+	w := multipart.NewWriter(buf)
+	h := make(textproto.MIMEHeader)
+	h.Add(headers.ContentType(mime.MultipartRelated, params.StringValue("boundary", w.Boundary())))
+
+	pw.CreatePart(h)
+
+	return c.WriteContent(buf, w)
+}
+
+func (c *relatedContainer) Close(_ io.Writer) error {
+	return nil
+}
+
+// endregion
+
+// region mixedContainer is a container for emails that have attachments.
+
+type mixedContainer struct {
+	Attachments map[string]*attachments.EmbeddedBinaryObject
+	Time        time.Time
+	container
+}
+
+func (c *mixedContainer) WriteContent(buf io.Writer, w *multipart.Writer) error {
+	for _, child := range c.Children {
+		child.WriteFull(buf, w)
+	}
+
+	err := writeAttachments(w, c.Attachments, c.Time)
+
+	if err != nil {
+		return err
+	}
+
+	w.Close()
+
+	return nil
+}
+
+func (c *mixedContainer) WriteFull(buf io.Writer, w *multipart.Writer) error {
+	h := make(textproto.MIMEHeader)
+	h.Add(headers.ContentType(mime.MultipartMixed, params.StringValue("boundary", w.Boundary())))
+
+	err := serialiseHeaders(buf, h)
+
+	if err != nil {
+		return err
+	}
+
+	return c.WriteContent(buf, w)
+}
+
+func (c *mixedContainer) Close(_ io.Writer) error {
+	return nil
+}
+
+// endregion
+
+func newContainer() container {
+	return container{
+		Children: make([]emailPart, 0),
+	}
+}
+
 // GenerateMessage will create a buffer containing the email message in it's current state.
 func (m *Message) GenerateMessage() (*bytes.Buffer, error) {
 	buf := &bytes.Buffer{}
 	w := multipart.NewWriter(buf)
 
-	if len(m.attachments) > 0 {
-		m.AddMailHeader(headers.ContentType(mime.MultipartMixed, params.StringValue("boundary", w.Boundary())))
+	var main emailBody
+	var mainContentType mime.Type
+	var text *textContainer
+	var html *htmlContainer
+	var alternative *alternativeContainer
+	var related *relatedContainer
+	var mixed *mixedContainer
+	contentIds := make(map[string]string)
+	currentTime := time.Now()
+
+	if m.textBody != nil {
+		text = &textContainer{
+			TextBody:  m.textBody,
+			container: newContainer(),
+		}
+		text.MIMEType = mime.TextPlain
+
+		main = text
+		mainContentType = text.MIMEType
 	}
+
+	if m.htmlBody != nil {
+		html = &htmlContainer{
+			ContentIds: contentIds,
+			HTMLBody:   m.htmlBody,
+			Images:     m.images,
+		}
+		html.MIMEType = mime.TextHTML
+
+		main = html
+		mainContentType = html.MIMEType
+	}
+
+	if m.textBody != nil && m.htmlBody != nil {
+		alternative = &alternativeContainer{}
+		alternative.MIMEType = mime.MultipartAlternative
+		alternative.Children = append(alternative.Children, text, html)
+
+		main = alternative
+		mainContentType = alternative.MIMEType
+	}
+
+	if len(m.images) > 0 {
+		related = &relatedContainer{
+			Images:     m.images,
+			ContentIds: contentIds,
+			Time:       currentTime,
+		}
+		related.MIMEType = mime.MultipartRelated
+
+		if m.textBody != nil {
+			related.Children = append(related.Children, alternative)
+		} else {
+			related.Children = append(related.Children, html)
+		}
+
+		main = related
+		mainContentType = related.MIMEType
+	}
+
+	if len(m.attachments) > 0 {
+		mixed = &mixedContainer{
+			Time:        currentTime,
+			Attachments: m.attachments,
+		}
+		mixed.MIMEType = mime.MultipartMixed
+
+		if related != nil {
+			mixed.Children = append(mixed.Children, related)
+		} else if alternative != nil {
+			mixed.Children = append(mixed.Children, alternative)
+		} else if html != nil {
+			mixed.Children = append(mixed.Children, html)
+		} else {
+			mixed.Children = append(mixed.Children, text)
+		}
+
+		main = mixed
+		mainContentType = mixed.MIMEType
+	}
+
+	m.AddMailHeader(headers.ContentType(mainContentType, params.StringValue("boundary", w.Boundary())))
 
 	err := serialiseHeaders(buf, m.headers)
 
@@ -217,59 +510,7 @@ func (m *Message) GenerateMessage() (*bytes.Buffer, error) {
 		return nil, err
 	}
 
-	currentTime := time.Now()
-
-	relatedBodyW := multipart.NewWriter(buf)
-	relatedBodyHeaders := make(textproto.MIMEHeader)
-	relatedBodyHeaders.Add(headers.ContentType(mime.MultipartRelated, params.StringValue("boundary", relatedBodyW.Boundary())))
-
-	w.CreatePart(relatedBodyHeaders)
-
-	alternativeBodyW := multipart.NewWriter(buf)
-	alternativeBodyHeaders := make(textproto.MIMEHeader)
-	alternativeBodyHeaders.Add(headers.ContentType(mime.MultipartAlternative, params.StringValue("boundary", alternativeBodyW.Boundary())))
-
-	relatedBodyW.CreatePart(alternativeBodyHeaders)
-
-	if m.textBody != nil {
-		err = writeTextBody(alternativeBodyW, m.textBody.GenerateBody())
-
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	var contentIds map[string]string
-
-	if m.htmlBody != nil {
-		contentIds, err = writeHtmlBody(alternativeBodyW, m.htmlBody.GenerateBody(), m.images)
-
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	alternativeBodyW.Close()
-
-	if m.htmlBody != nil && len(m.images) > 0 {
-		err = writeInlineImages(relatedBodyW, m.images, contentIds, currentTime)
-
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	relatedBodyW.Close()
-
-	if len(m.attachments) > 0 {
-		err = writeAttachments(w, m.attachments, currentTime)
-
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	w.Close()
+	main.WriteContent(buf, w)
 
 	if err != nil {
 		return nil, errors.Wrap(err, "There was an issue serialising the headers.")

@@ -3,6 +3,6 @@ package params
 type ContentDisposition string
 
 const (
-	DispInline ContentDisposition = "inline"
+	DispInline     ContentDisposition = "inline"
 	DispAttachment ContentDisposition = "attachment"
 )
