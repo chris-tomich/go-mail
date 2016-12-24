@@ -28,3 +28,6 @@ vendor/
 
 # Ignore IntelliJ directories
 .idea/
+
+# Ignore personal test directories
+personal-tests/
